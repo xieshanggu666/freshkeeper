@@ -149,6 +149,30 @@ function check(name, cond) {
   $$('.tab[data-view]').find(t => t.dataset.view === 'history').click();
   check('位置修改进入追溯（位置字段）', /位置：/.test($('#auditList').textContent));
 
+  // 8b. 合并一份较早生成（但 seq 更大）的备份：追溯必须按实际时间排序
+  let importErr = null;
+  try {
+    window.__store.importJSON({
+      items: [{ id: 'oldb1', name: '一月的旧食材', purchaseDate: '2026-01-05', packageType: 'sealed', location: 'fridge' }],
+      audit: [
+        { id: 'oldh1', seq: 9001, at: '2026-01-05T10:00:00.000Z', action: 'item.create', detail: { name: '一月的旧食材' } },
+        { id: 'oldh2', seq: 9002, at: '2026-01-06T10:00:00.000Z', action: 'event.add', detail: { name: '一月的旧食材', eventType: 'open' } }
+      ]
+    }, true);
+  } catch (e) { importErr = e; }
+  check('旧备份合并成功', !importErr);
+  window.__renderAll();
+  $$('.tab[data-view]').find(t => t.dataset.view === 'history').click();
+  const auditTexts = $$('#auditList .audit-item');
+  const idxOld = auditTexts.findIndex(el => el.textContent.includes('一月的旧食材'));
+  const idxRecent = auditTexts.findIndex(el => el.textContent.includes('黄瓜'));
+  check('旧备份审计不会倒置到最新操作之前', idxRecent > -1 && idxOld > -1 && idxRecent < idxOld);
+  // 旧备份内部仍按时间倒序（1/6 的 event.add 排在 1/5 的 create 之前）
+  const oldEls = auditTexts.slice(idxOld);
+  const idxOldOpen = oldEls.findIndex(el => el.textContent.includes('记录期限事件'));
+  const idxOldCreate = oldEls.findIndex(el => el.textContent.includes('录入食材') && el.textContent.includes('一月的旧食材'));
+  check('旧备份内部审计仍倒序', idxOldOpen > -1 && idxOldCreate > -1 && idxOldOpen < idxOldCreate);
+
   // 9. 畸形导入必须被拒绝，且页面渲染不崩
   const cardsBefore = $$('.food-card').length;
   const badPayloads = [

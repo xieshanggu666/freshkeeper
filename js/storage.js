@@ -349,10 +349,20 @@
       return db.items.filter(function (i) { return includeRemoved || !i.removed; });
     }
 
+    // 审计按“实际发生时间 at”排序（倒序：最新在前）；
+    // seq 仅在同一毫秒内作为次序兜底（旧实现只按 seq 排，合并旧备份会整体排到最新操作之前）
+    function compareAuditDesc(a, b) {
+      var ta = String(a.at || ''), tb = String(b.at || '');
+      if (ta !== tb) return ta < tb ? 1 : -1;
+      var sa = Number(a.seq) || 0, sb = Number(b.seq) || 0;
+      if (sa !== sb) return sb - sa;
+      var ia = String(a.id || ''), ib = String(b.id || '');
+      if (ia !== ib) return ia < ib ? 1 : -1;
+      return 0;
+    }
+
     function auditEntries() {
-      return db.audit.slice().sort(function (a, b) {
-        return (b.seq || 0) - (a.seq || 0);
-      });
+      return db.audit.slice().sort(compareAuditDesc);
     }
 
     function exportJSON() {
@@ -370,10 +380,11 @@
           throw e;
         }
         db.items = db.items.concat(clean.items);
-        // 合并进来的审计序号要平移到当前序号之后，避免 seq 倒退导致追溯排序错乱
-        var shift = auditSeq;
-        clean.audit.forEach(function (a) { a.seq = (a.seq || 0) + shift; });
+        // 审计顺序以实际时间 at 为准（见 compareAuditDesc），不再平移外部 seq，
+        // 否则较早生成的备份会被误排到本地最新操作之后
         db.audit = db.audit.concat(clean.audit);
+        var importedMaxSeq = clean.audit.reduce(function (m, e) { return Math.max(m, Number(e.seq) || 0); }, 0);
+        auditSeq = Math.max(auditSeq, importedMaxSeq);
       } else {
         db = { items: clean.items, audit: clean.audit };
         auditSeq = db.audit.reduce(function (m, e) { return Math.max(m, e.seq || 0); }, 0);

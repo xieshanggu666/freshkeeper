@@ -174,3 +174,68 @@ test('本地 JSON 完全损坏时降级为空库存而非抛错', () => {
   assert.doesNotThrow(() => Storage.createStore(b));
   assert.equal(Storage.createStore(b).listItems().length, 0);
 });
+
+test('合并较早生成的备份：外部审计按实际时间排在本地较新操作之前（seq 不倒置）', () => {
+  const st = Storage.createStore(memBackend());
+  // 本地在较晚时间产生操作
+  st.addItem({ name: '本地新食材', purchaseDate: '2026-09-13', packageType: 'sealed', location: 'fridge' });
+
+  // 外部备份：审计记录都生成于很早以前，但其 seq 恰好很大
+  const oldBackup = {
+    items: [
+      { id: 'old1', name: '旧备份食材', purchaseDate: '2026-01-01', packageType: 'sealed', location: 'fridge' }
+    ],
+    audit: [
+      { id: 'old-a1', seq: 999, at: '2026-01-01T08:00:00.000Z', action: 'item.create',
+        detail: { itemId: 'old1', name: '旧备份食材' } },
+      { id: 'old-a2', seq: 1000, at: '2026-01-02T08:00:00.000Z', action: 'event.add',
+        detail: { itemId: 'old1', name: '旧备份食材', eventType: 'open' } }
+    ]
+  };
+  st.importJSON(oldBackup, true);
+
+  const entries = st.auditEntries();
+  const ordered = entries.map(e => e.action);
+  // 最新（data.import / 本地 create）必须在最前；旧备份 1 月的记录必须在后
+  const idxOldest = ordered.indexOf('item.create', ordered.indexOf('data.import'));
+  const lastTwo = ordered.slice(-2);
+  assert.deepEqual(lastTwo, ['event.add', 'item.create'], '旧备份两条按时间顺序落在末尾');
+  const idxOldCreate = ordered.lastIndexOf('item.create');
+  assert.ok(idxOldCreate > ordered.indexOf('data.import'), '旧备份录入早于本次导入');
+  // 旧备份自身顺序正确：1/2 event.add 在 1/1 create 之前（倒序）
+  assert.ok(ordered.indexOf('event.add') > -1);
+});
+
+test('合并较晚生成的备份：外部较新审计应排在本地较早操作之前', () => {
+  const st = Storage.createStore(memBackend());
+  st.addItem({ name: '本地旧食材', purchaseDate: '2026-09-01', packageType: 'sealed', location: 'fridge' });
+
+  const newerBackup = {
+    items: [
+      { id: 'new1', name: '备份里的新食材', purchaseDate: '2026-09-13', packageType: 'sealed', location: 'fridge' }
+    ],
+    audit: [
+      { id: 'new-a1', seq: 1, at: '2026-12-01T08:00:00.000Z', action: 'item.create',
+        detail: { itemId: 'new1', name: '备份里的新食材' } }
+    ]
+  };
+  st.importJSON(newerBackup, true);
+  const ordered = st.auditEntries().map(e => e.at);
+  for (let i = 1; i < ordered.length; i++) {
+    assert.ok(ordered[i - 1] >= ordered[i], '审计必须按时间倒序，第 ' + i + ' 条倒置');
+  }
+  assert.equal(ordered[ordered.length - 1] < '2026-10-01', true, '本地最早操作在最末');
+});
+
+test('同毫秒操作仍由 seq 兜底排序（不受合并影响）', () => {
+  const st = Storage.createStore(memBackend());
+  const it = st.addItem({ name: '奶', purchaseDate: '2026-09-13', packageType: 'sealed', location: 'fridge' });
+  st.addEvent(it.id, 'open', { at: '2026-09-13' });
+  st.addEvent(it.id, 'cook', { at: '2026-09-13' });
+  const ordered = st.auditEntries();
+  const times = ordered.map(e => e.at);
+  // 前两条为同毫秒新增的事件：seq 大的（cook）在前
+  assert.equal(times[0], times[1], '最新两条事件同毫秒');
+  const detailTypes = ordered.slice(0, 2).map(e => e.detail.eventType);
+  assert.deepEqual(detailTypes, ['cook', 'open']);
+});
