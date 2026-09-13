@@ -21,6 +21,145 @@
     return (prefix || 'id') + '_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 8);
   }
 
+  // ---------- 结构校验与规范化 ----------
+  // 导入时采用严格模式：任一食材记录缺必要结构即整体拒绝（抛错，不写入任何数据）。
+  // 可选的畸形字段（events/revisions 不是数组等）不做静默吞除，统一归一化，保证渲染不崩。
+  var LOCATIONS = ['fridge', 'freezer', 'pantry'];
+  var PACKAGES = ['sealed', 'opened', 'loose'];
+  var EVENT_TYPES = ['open', 'move', 'freeze', 'thaw', 'cook', 'reheat', 'consume', 'discard'];
+  var DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+
+  function isDateStr(v) {
+    return typeof v === 'string' && DATE_RE.test(v) && !isNaN(new Date(v + 'T12:00:00').getTime());
+  }
+  function isPlainObject(v) {
+    return Object.prototype.toString.call(v) === '[object Object]';
+  }
+
+  // 校验并返回归一化后的食材。
+  // opts.lenient（加载历史数据）：核心字段合法即保留，畸形数组/事件尽量修复，不轻易丢弃；
+  // 严格模式（导入）：任何畸形结构都收集错误，由调用方整体拒绝。
+  function normalizeItem(raw, index, errors, opts) {
+    opts = opts || {};
+    var lenient = !!opts.lenient;
+    var where = '第 ' + (index + 1) + ' 条食材';
+    if (!isPlainObject(raw)) {
+      if (!lenient) errors.push(where + '不是对象');
+      return null;
+    }
+    if (typeof raw.name !== 'string' || !raw.name.trim()) {
+      if (!lenient) errors.push(where + '缺少名称（name）');
+      return null;
+    }
+    if (!isDateStr(raw.purchaseDate)) {
+      if (!lenient) errors.push(where + '「' + raw.name + '」缺少合法购买日期（YYYY-MM-DD）');
+      return null;
+    }
+    // 加载旧数据时对非法位置/包装做兜底；导入时严格拒绝
+    var loc = LOCATIONS.indexOf(raw.location) >= 0 ? raw.location : (lenient ? 'fridge' : null);
+    var pkg = PACKAGES.indexOf(raw.packageType) >= 0 ? raw.packageType : (lenient ? 'sealed' : null);
+    if (!loc) { errors.push(where + '「' + raw.name + '」保存位置非法：' + raw.location); return null; }
+    if (!pkg) { errors.push(where + '「' + raw.name + '」包装状态非法：' + raw.packageType); return null; }
+
+    var item = {
+      id: (typeof raw.id === 'string' && raw.id) ? raw.id : uid('it'),
+      name: raw.name.trim().slice(0, 30),
+      categoryId: typeof raw.categoryId === 'string' ? raw.categoryId : '',
+      purchaseDate: raw.purchaseDate,
+      packageType: pkg,
+      location: loc,
+      note: typeof raw.note === 'string' ? raw.note.slice(0, 200) : '',
+      events: [],
+      revisions: [],
+      createdAt: typeof raw.createdAt === 'string' && raw.createdAt ? raw.createdAt : nowISO()
+    };
+
+    var rawEvents = Array.isArray(raw.events) ? raw.events
+      : (raw.events == null ? [] : (lenient ? [] : null));
+    if (rawEvents === null) { errors.push(where + '「' + item.name + '」的 events 必须是数组'); return null; }
+    rawEvents.forEach(function (ev, j) {
+      if (!isPlainObject(ev)) {
+        if (!lenient) errors.push(where + '「' + item.name + '」第 ' + (j + 1) + ' 条事件不是对象');
+        return;
+      }
+      if (EVENT_TYPES.indexOf(ev.type) < 0) {
+        if (!lenient) errors.push(where + '「' + item.name + '」存在不支持的事件类型：' + ev.type);
+        return;
+      }
+      if (!isDateStr(ev.at)) {
+        if (!lenient) errors.push(where + '「' + item.name + '」的「' + ev.type + '」事件缺少合法日期');
+        return;
+      }
+      var clean = {
+        id: (typeof ev.id === 'string' && ev.id) ? ev.id : uid('ev'),
+        type: ev.type, at: ev.at,
+        deleted: !!ev.deleted
+      };
+      if (clean.deleted) clean.deletedAt = ev.deletedAt || nowISO();
+      if (typeof ev.source === 'string') clean.source = ev.source;
+      if (typeof ev.createdAt === 'string') clean.createdAt = ev.createdAt;
+      ['to', 'from', 'reason', 'note'].forEach(function (k) {
+        if (ev[k] !== undefined) clean[k] = String(ev[k]).slice(0, 200);
+      });
+      item.events.push(clean);
+    });
+
+    if (raw.revisions !== undefined && raw.revisions !== null && !Array.isArray(raw.revisions)) {
+      if (!lenient) { errors.push(where + '「' + item.name + '」的 revisions 必须是数组'); return null; }
+    } else if (Array.isArray(raw.revisions)) {
+      raw.revisions.forEach(function (rev) {
+        if (isPlainObject(rev) && isPlainObject(rev.fields)) item.revisions.push({ at: rev.at || nowISO(), fields: rev.fields });
+      });
+    }
+
+    if (raw.removed === true) item.removed = true, item.removedAt = raw.removedAt || nowISO();
+    return item;
+  }
+
+  function normalizeAuditEntry(raw) {
+    if (!isPlainObject(raw)) return null;
+    if (typeof raw.action !== 'string' || !raw.action) return null;
+    return {
+      id: (typeof raw.id === 'string' && raw.id) ? raw.id : uid('aud'),
+      seq: Number.isFinite(raw.seq) ? raw.seq : 0,
+      at: typeof raw.at === 'string' ? raw.at : nowISO(),
+      action: raw.action,
+      detail: isPlainObject(raw.detail) ? raw.detail : {},
+      snapshot: raw.snapshot === undefined ? null : raw.snapshot
+    };
+  }
+
+  // 严格校验整份导入数据，返回 { items, audit }；非法即抛错（原子拒绝）
+  function validatePayload(input) {
+    var data = typeof input === 'string' ? JSON.parse(input) : input;
+    if (!isPlainObject(data)) throw new Error('文件内容不是有效的数据对象');
+    if (!Array.isArray(data.items)) throw new Error('缺少 items 食材列表');
+    var errors = [];
+    var seen = {};
+    var items = data.items.map(function (raw, i) {
+      var item = normalizeItem(raw, i, errors);
+      if (item) {
+        if (seen[item.id]) errors.push('食材 ID 重复：' + item.id + '（同一文件内出现多次）');
+        seen[item.id] = true;
+      }
+      return item;
+    });
+    if (data.audit !== undefined && data.audit !== null && !Array.isArray(data.audit)) {
+      errors.push('audit 必须是数组');
+    }
+    if (errors.length) {
+      var e = new Error('导入文件有 ' + errors.length + ' 处结构问题，已取消导入（未改动现有库存）：\n' +
+        errors.slice(0, 5).map(function (x) { return '· ' + x; }).join('\n') +
+        (errors.length > 5 ? '\n……等共 ' + errors.length + ' 处' : ''));
+      e.errors = errors;
+      throw e;
+    }
+    var audit = Array.isArray(data.audit)
+      ? data.audit.map(normalizeAuditEntry).filter(Boolean)
+      : [];
+    return { items: items, audit: audit };
+  }
+
   function createStore(backend) {
     backend = backend || (function () {
       if (typeof localStorage === 'undefined') {
@@ -33,18 +172,34 @@
       return localStorage;
     })();
 
+    // 加载历史数据采用“宽松迁移”：尽力归一化，无法修复的记录丢弃并告警，避免页面白屏
     function load() {
+      var raw = backend.getItem(STORE_KEY);
+      if (!raw) return { items: [], audit: [] };
       try {
-        var raw = backend.getItem(STORE_KEY);
-        if (!raw) return { items: [], audit: [] };
-        var data = JSON.parse(raw);
-        return { items: data.items || [], audit: data.audit || [] };
+        var parsed = JSON.parse(raw);
+        if (!isPlainObject(parsed) || !Array.isArray(parsed.items)) return { items: [], audit: [] };
+        var total = Array.isArray(parsed.items) ? parsed.items.length : 0;
+        var errors = [];
+        var items = parsed.items.map(function (raw, i) {
+          return normalizeItem(raw, i, errors, { lenient: true });
+        }).filter(Boolean);
+        var skipped = total - items.length;
+        var audit = Array.isArray(parsed.audit)
+          ? parsed.audit.map(normalizeAuditEntry).filter(Boolean) : [];
+        if (skipped > 0 && typeof console !== 'undefined') {
+          console.warn('FreshKeeper：本地数据跳过 ' + skipped + ' 条无法修复的异常记录');
+        }
+        return { items: items, audit: audit };
       } catch (e) {
+        if (typeof console !== 'undefined') console.warn('FreshKeeper：本地数据解析失败，使用空库存', e);
         return { items: [], audit: [] };
       }
     }
 
     var db = load();
+    // 历史脏数据经宽松迁移后回写，保证后续读取的都是规范结构
+    try { backend.setItem(STORE_KEY, JSON.stringify(db)); } catch (e) {}
     var auditSeq = db.audit.reduce(function (m, e) { return Math.max(m, e.seq || 0); }, 0);
 
     function persist() {
@@ -196,15 +351,27 @@
     }
 
     function importJSON(text, merge) {
-      var incoming = typeof text === 'string' ? JSON.parse(text) : text;
-      if (!merge) {
-        db = { items: incoming.items || [], audit: incoming.audit || [] };
+      // 先校验、后写入：任何结构问题都整体拒绝，现有库存不被改动
+      var clean = validatePayload(text);
+      if (merge) {
+        var dup = clean.items.filter(function (it) { return getItem(it.id); }).map(function (it) { return it.id; });
+        if (dup.length) {
+          var e = new Error('导入文件中有 ' + dup.length + ' 条记录与现有库存 ID 相同（可能是同一数据重复导入），已取消合并。');
+          e.errors = dup;
+          throw e;
+        }
+        db.items = db.items.concat(clean.items);
+        // 合并进来的审计序号要平移到当前序号之后，避免 seq 倒退导致追溯排序错乱
+        var shift = auditSeq;
+        clean.audit.forEach(function (a) { a.seq = (a.seq || 0) + shift; });
+        db.audit = db.audit.concat(clean.audit);
       } else {
-        db.items = db.items.concat(incoming.items || []);
-        db.audit = db.audit.concat(incoming.audit || []);
+        db = { items: clean.items, audit: clean.audit };
+        auditSeq = db.audit.reduce(function (m, e) { return Math.max(m, e.seq || 0); }, 0);
       }
-      log('data.import', { merge: !!merge, items: (incoming.items || []).length });
+      log('data.import', { merge: !!merge, items: clean.items.length, audit: clean.audit.length });
       persist();
+      return { items: clean.items.length, audit: clean.audit.length };
     }
 
     function seedDemo(demoItems, Engine) {
@@ -238,7 +405,7 @@
     };
   }
 
-  var Storage = { createStore: createStore, uid: uid };
+  var Storage = { createStore: createStore, uid: uid, validatePayload: validatePayload };
   if (typeof module !== 'undefined' && module.exports) {
     module.exports = Storage;
   } else {

@@ -133,7 +133,43 @@ function check(name, cond) {
   $$('.tab[data-view]').find(t => t.dataset.view === 'history').click();
   check('位置修改进入追溯（位置字段）', /位置：/.test($('#auditList').textContent));
 
-  // 9. 持久化：刷新后数据仍在
+  // 9. 畸形导入必须被拒绝，且页面渲染不崩
+  const cardsBefore = $$('.food-card').length;
+  const badPayloads = [
+    '{不是json',
+    JSON.stringify({ foo: 1 }),
+    JSON.stringify({ items: [{ name: '没有日期的肉' }] }),
+    JSON.stringify({ items: [{ name: '坏位置', purchaseDate: '2026-09-10', packageType: 'sealed', location: '阳台' }] }),
+    JSON.stringify({ items: [{ name: '坏事件', purchaseDate: '2026-09-10', packageType: 'sealed', location: 'fridge', events: '开封了' }] })
+  ];
+  badPayloads.forEach((p, i) => {
+    let threw = false, msg = '';
+    // 用页面内同一 store 验证：拒绝后现有库存不变
+    try { window.__store.importJSON(p, true); }
+    catch (e) { threw = true; msg = e.message; }
+    check('畸形导入#' + i + '被拒绝', threw && /items|结构|缺少|非法|JSON/i.test(msg));
+  });
+  check('畸形导入全部被拒后库存数量不变', $$('.food-card').length === cardsBefore);
+  // 通过页面 FileReader 入口导入一次非法内容，确认库存数不变、列表仍正常渲染
+  window.alert = () => {};
+  // 直接派发 change 并注入伪造 files（jsdom 无 DataTransfer）
+  let invoked = false;
+  const origFR = window.FileReader;
+  window.FileReader = function () {
+    return {
+      readAsText() { invoked = true; setTimeout(() => this.onload({ target: { result: '{broken' } }), 0); }
+    };
+  };
+  Object.defineProperty($('#importInput'), 'files', { value: [{ name: 'bad.json' }], configurable: true });
+  fire($('#importInput'), 'change');
+  window.FileReader = origFR;
+  await new Promise(r => setTimeout(r, 30));
+  check('页面导入入口确实读取了文件', invoked);
+  $$('.tab[data-view]').find(t => t.dataset.view === 'inventory').click();
+  check('畸形导入后库存数量不变', $$('.food-card').length === cardsBefore);
+  check('畸形导入后库存列表仍可正常渲染（无白屏）', $$('.food-card').every(c => c.querySelector('.fc-name')));
+
+  // 10. 持久化：刷新后数据仍在
   const persisted = JSON.parse(window.localStorage.getItem('freshkeeper:v1'));
   check('localStorage 持久化', persisted.items.length >= 10 && persisted.audit.length >= 5);
 

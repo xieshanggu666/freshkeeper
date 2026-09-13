@@ -6,6 +6,7 @@
   var $$ = function (sel, root) { return Array.prototype.slice.call((root || document).querySelectorAll(sel)); };
 
   var store = FreshStorage.createStore();
+  if (typeof window !== 'undefined') window.__store = store; // 仅用于自动化测试/调试
   var state = {
     view: 'inventory',
     filter: 'all',
@@ -636,11 +637,14 @@
       var r = new FileReader();
       r.onload = function () {
         try {
-          store.importJSON(r.result, true);
-          toast('导入完成（已合并）');
+          var result = store.importJSON(r.result, true);
+          toast('导入完成：新增 ' + result.items + ' 样食材（已合并）');
           closeSheet('sheetSettings');
           renderAll();
-        } catch (e) { toast('导入失败：文件格式不正确'); }
+        } catch (e) {
+          // 结构不合法时导入被整体取消、现有库存不变；向用户说明具体原因
+          alert('未能导入，现有库存没有任何改动。\n\n' + (e.message || '文件内容无法解析'));
+        }
       };
       r.readAsText(f);
       ev.target.value = '';
