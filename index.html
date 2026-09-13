@@ -1,0 +1,182 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<meta name="theme-color" content="#1e8e4f">
+<title>鲜知 FreshKeeper · 家庭食材保质期助手</title>
+<link rel="stylesheet" href="css/styles.css">
+</head>
+<body>
+
+<header class="app-header">
+  <div class="brand">
+    <span class="logo">🥬</span>
+    <div>
+      <h1>鲜知</h1>
+      <p class="subtitle" id="summaryLine">正在加载库存…</p>
+    </div>
+  </div>
+  <button class="icon-btn" id="btnExport" title="导出/导入/演示数据">⚙️</button>
+</header>
+
+<main id="views">
+
+  <!-- ========== 库存视图 ========== -->
+  <section class="view" id="view-inventory">
+    <div class="filter-bar" id="statusFilter">
+      <button class="chip active" data-f="all">全部</button>
+      <button class="chip danger" data-f="expired">已过期</button>
+      <button class="chip warn" data-f="urgent">尽快/临期</button>
+      <button class="chip fresh" data-f="fresh">新鲜</button>
+      <button class="chip muted" data-f="frozen">冷冻中</button>
+      <button class="chip muted" data-f="ended">已归档</button>
+    </div>
+    <div id="inventoryList" class="card-list"></div>
+    <p class="empty-hint" id="inventoryEmpty" hidden>还没有食材。点下方 <b>＋</b> 录入，或在 ⚙️ 里载入演示数据。</p>
+  </section>
+
+  <!-- ========== 方案视图 ========== -->
+  <section class="view" id="view-plan" hidden>
+    <div class="plan-head">
+      <h2>用现有库存，先处理最该处理的</h2>
+      <p class="hint">方案只使用当前库存；每个方案都会注明用了什么、做完后还剩什么需要尽快处理。</p>
+      <div class="select-bar">
+        <span class="hint">也可以只勾选几样食材让系统组合：</span>
+        <div id="quickPick" class="quick-pick"></div>
+      </div>
+    </div>
+    <div id="planList" class="plan-list"></div>
+  </section>
+
+  <!-- ========== 追溯视图 ========== -->
+  <section class="view" id="view-history" hidden>
+    <div class="history-head">
+      <h2>操作与变更记录</h2>
+      <p class="hint">所有修改、期限事件、方案应用都会记录在此，可逐条撤销，不会物理删除。</p>
+    </div>
+    <div id="auditList" class="audit-list"></div>
+  </section>
+
+</main>
+
+<!-- 底部录入按钮 + 导航 -->
+<nav class="tabbar">
+  <button class="tab active" data-view="inventory"><span>🧺</span>库存</button>
+  <button class="tab tab-add" id="btnAdd"><span>＋</span><label>录入</label></button>
+  <button class="tab" data-view="plan"><span>🍳</span>方案</button>
+  <button class="tab" data-view="history"><span>🕓</span>追溯</button>
+</nav>
+
+<!-- ========== 录入/编辑弹层 ========== -->
+<div class="sheet" id="sheetForm" hidden>
+  <div class="sheet-mask" data-close></div>
+  <div class="sheet-panel">
+    <div class="sheet-handle"></div>
+    <h3 id="formTitle">录入食材</h3>
+
+    <div class="ocr-zone" id="ocrZone">
+      <button type="button" class="ocr-btn" id="btnCamera">📷 拍照识别包装标签</button>
+      <button type="button" class="ocr-btn ghost" id="btnPhoto">🖼️ 从相册选择</button>
+      <input type="file" id="fileInput" accept="image/*" hidden>
+      <p class="hint" id="ocrStatus">识别后会把文字填进表单，<b>请你逐项确认再保存</b>；识别结果不会自动入库。</p>
+    </div>
+
+    <form id="itemForm">
+      <label class="field">
+        <span>食材名称 <em>*</em></span>
+        <input type="text" id="fName" required maxlength="30" placeholder="如：猪里脊 / 菠菜 / 酸奶" autocomplete="off">
+        <small class="cat-hint" id="catHint"></small>
+      </label>
+
+      <label class="field">
+        <span>食材分类（识别不准时可手改）</span>
+        <select id="fCategory"></select>
+      </label>
+
+      <div class="field-row">
+        <label class="field">
+          <span>购买日期 <em>*</em></span>
+          <input type="date" id="fPurchaseDate" required>
+        </label>
+        <label class="field">
+          <span>包装状态</span>
+          <select id="fPackage">
+            <option value="sealed">未开封 / 密封</option>
+            <option value="opened">已开封</option>
+            <option value="loose">散装（称重/无包装）</option>
+          </select>
+        </label>
+      </div>
+
+      <label class="field">
+        <span>保存位置</span>
+        <div class="seg" id="fLocation">
+          <button type="button" data-v="fridge" class="active">🧊 冷藏</button>
+          <button type="button" data-v="freezer">❄️ 冷冻</button>
+          <button type="button" data-v="pantry">🏠 常温</button>
+        </div>
+      </label>
+
+      <label class="field">
+        <span>备注（可选）</span>
+        <input type="text" id="fNote" maxlength="60" placeholder="如：已分两盒 / 周三剩菜">
+      </label>
+
+      <div class="rule-preview" id="rulePreview"></div>
+
+      <div class="form-actions">
+        <button type="button" class="btn-ghost" id="btnDeleteItem" hidden>删除记录</button>
+        <button type="button" class="btn-ghost" data-close>取消</button>
+        <button type="submit" class="btn-primary">保存</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- ========== 食材详情/时间线弹层 ========== -->
+<div class="sheet" id="sheetDetail" hidden>
+  <div class="sheet-mask" data-close></div>
+  <div class="sheet-panel">
+    <div class="sheet-handle"></div>
+    <div id="detailBody"></div>
+  </div>
+</div>
+
+<!-- ========== 方案详情弹层 ========== -->
+<div class="sheet" id="sheetPlan" hidden>
+  <div class="sheet-mask" data-close></div>
+  <div class="sheet-panel">
+    <div class="sheet-handle"></div>
+    <div id="planDetailBody"></div>
+  </div>
+</div>
+
+<!-- ========== 设置弹层 ========== -->
+<div class="sheet" id="sheetSettings" hidden>
+  <div class="sheet-mask" data-close></div>
+  <div class="sheet-panel">
+    <div class="sheet-handle"></div>
+    <h3>数据与设置</h3>
+    <p class="hint">所有数据只保存在本设备浏览器（localStorage），不上传服务器。</p>
+    <div class="settings-list">
+      <button class="setting-row" id="btnDemo">🧪 载入演示数据</button>
+      <button class="setting-row" id="btnExport2">⬇️ 导出全部数据（JSON）</button>
+      <button class="setting-row" id="btnImport">⬆️ 从 JSON 文件导入（合并）</button>
+      <input type="file" id="importInput" accept="application/json" hidden>
+      <button class="setting-row danger" id="btnWipe">🗑️ 清空全部数据</button>
+    </div>
+    <div class="form-actions"><button class="btn-ghost" data-close>关闭</button></div>
+  </div>
+</div>
+
+<div id="toast" class="toast" hidden></div>
+
+<script src="js/rules.js"></script>
+<script src="js/engine.js"></script>
+<script src="js/planner.js"></script>
+<script src="js/storage.js"></script>
+<script src="js/ocr.js"></script>
+<script src="js/app.js"></script>
+</body>
+</html>
