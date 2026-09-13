@@ -83,6 +83,22 @@ function check(name, cond) {
   check('被撤销事件仍保留为已撤销痕迹', /已撤销/.test($('#detailBody').textContent));
   $('#sheetDetail').hidden = true;
 
+  // 4b. 同一天连续记录“冷冻→解冻”，时间线必须按实际先后（较晚的解冻在前）
+  const sameDayItem = window.__store.addItem(
+    { name: '同日测试虾', purchaseDate: '2026-09-13', packageType: 'sealed', location: 'fridge' }, 'test');
+  window.__store.addEvent(sameDayItem.id, 'freeze', { at: '2026-09-13' }, 'test');
+  window.__store.addEvent(sameDayItem.id, 'thaw', { at: '2026-09-13' }, 'test');
+  window.__renderAll();
+  document.querySelector('.food-card[data-id="' + sameDayItem.id + '"]').click();
+  const tlTexts = Array.from($('#detailBody').querySelectorAll('.tl-item .tl-body'))
+    .map(el => el.textContent.replace(/\s+/g, ''));
+  const idxFreeze = tlTexts.findIndex(t => t.includes('放入冷冻'));
+  const idxThaw = tlTexts.findIndex(t => t.includes('解冻移至冷藏'));
+  check('同日事件倒序：解冻显示在冷冻之前', idxThaw >= 0 && idxFreeze >= 0 && idxThaw < idxFreeze);
+  check('同日事件重放结果为已解冻（而非冷冻中）',
+    /解冻后请勿再次冷冻/.test($('#detailBody').textContent));
+  $('#sheetDetail').hidden = true;
+
   // 5. 方案视图
   $$('.tab[data-view]').find(t => t.dataset.view === 'plan').click();
   check('方案视图可见', !$('#view-plan').hidden);

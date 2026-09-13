@@ -99,6 +99,44 @@ test('导入记录缺少 id/events/revisions 时自动补全为可用结构', ()
   assert.equal(it.events[0].type, 'open');
 });
 
+test('新增事件分配食材内单调递增 seq，同一天事件据此排序', () => {
+  const st = Storage.createStore(memBackend());
+  const it = st.addItem({ name: '虾', purchaseDate: '2026-09-11', packageType: 'sealed', location: 'fridge' });
+  const e1 = st.addEvent(it.id, 'freeze', { at: '2026-09-13' });
+  const e2 = st.addEvent(it.id, 'thaw', { at: '2026-09-13' });
+  const e3 = st.addEvent(it.id, 'cook', { at: '2026-09-13' });
+  assert.deepEqual([e1.seq, e2.seq, e3.seq], [1, 2, 3]);
+
+  // 方案批量应用（同一天多个事件）同样有序
+  const Planner = require('../js/planner');
+  const Engine = require('../js/engine');
+  const t = st.addItem({ name: '番茄', purchaseDate: '2026-09-09', packageType: 'loose', location: 'fridge' });
+  const e = st.addItem({ name: '鸡蛋', purchaseDate: '2026-09-01', packageType: 'sealed', location: 'fridge' });
+  const plans = Planner.buildPlans(st.listItems().filter(x => x.id === t.id || x.id === e.id), '2026-09-13T12:00:00');
+  const plan = plans.find(p => p.recipeId === 'egg-tomato');
+  assert.ok(plan);
+  st.applyPlan(plan);
+  const seqOf = id => st.getItem(id).events.slice().pop().seq;
+  assert.ok(seqOf(t.id) >= 1 && seqOf(e.id) >= 1);
+});
+
+test('导入归一化保留事件 seq；无 seq 的历史事件按文件次序补号且不与已有号冲突', () => {
+  const clean = Storage.validatePayload({ items: [{
+    name: '肉', purchaseDate: '2026-09-10', packageType: 'sealed', location: 'fridge',
+    events: [
+      { type: 'freeze', at: '2026-09-11', seq: 5 },
+      { type: 'thaw', at: '2026-09-11' },
+      { type: 'cook', at: '2026-09-11' }
+    ]
+  }] });
+  const evs = clean.items[0].events;
+  assert.equal(evs[0].seq, 5);
+  assert.ok(evs[1].seq > 5 && evs[2].seq > 5);
+  assert.notEqual(evs[1].seq, evs[2].seq, '补号互不相同，同日顺序稳定');
+  // 保持文件中的先后次序
+  assert.deepEqual(evs.map(x => x.type), ['freeze', 'thaw', 'cook']);
+});
+
 test('加载旧版脏数据时宽松迁移：核心字段合法则保留并归一化，页面不崩', () => {
   const b = memBackend();
   b.setItem('freshkeeper:v1', JSON.stringify({

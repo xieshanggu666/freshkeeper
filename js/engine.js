@@ -180,15 +180,35 @@
     }
   }
 
+  // ---------- 事件时序 ----------
+  // 同一天的多个事件必须按发生先后排序（如先“开封”后“做熟”、先“冷冻”后“解冻”），
+  // 依次回退到：事件日期 → 食材内序号 seq → 实际创建时间戳 → id，保证结果稳定且确定。
+  function eventTimeKey(ev) {
+    return dateOnly(ev.at).getTime();
+  }
+  function compareEventsAsc(a, b) {
+    var da = eventTimeKey(a), db = eventTimeKey(b);
+    if (da !== db) return da - db;
+    var sa = Number(a.seq) || 0, sb = Number(b.seq) || 0;
+    if (sa !== sb) return sa - sb;
+    var ca = a.createdAt || '', cb = b.createdAt || '';
+    if (ca !== cb) return ca < cb ? -1 : 1;
+    var ia = String(a.id || ''), ib = String(b.id || '');
+    if (ia !== ib) return ia < ib ? -1 : 1;
+    return 0; // 所有排序键一致，保持稳定（不得恒返回 -1）
+  }
+  // 倒序（时间线展示）：较晚发生的在前
+  function compareEventsDesc(a, b) {
+    return -compareEventsAsc(a, b);
+  }
+
   function rebuild(item) {
     var state = initialState(item);
-    // 复制事件对象再排序，避免给重放中的事件挂 _note 时污染存储对象
+    // 复制事件对象再排序，避免给重放中的事件挂临时字段时污染存储对象
     var events = (item.events || [])
       .filter(function (e) { return !e.deleted; })
       .map(function (e) { return Object.assign({}, e); })
-      .sort(function (a, b) {
-        return dateOnly(a.at).getTime() - dateOnly(b.at).getTime() || (a.seq || 0) - (b.seq || 0);
-      });
+      .sort(compareEventsAsc);
 
     events.forEach(function (ev) {
       if (state.ended) return;
@@ -393,6 +413,7 @@
     dateOnly: dateOnly, todayAt: todayAt, addDays: addDays, daysBetween: daysBetween,
     parseISODate: parseISODate, isoDate: isoDate,
     matchCategory: matchCategory, categoryOf: categoryOf, safeDaysFor: safeDaysFor,
+    compareEventsAsc: compareEventsAsc, compareEventsDesc: compareEventsDesc,
     rebuild: rebuild,
     assess: assess, assessAll: assessAll, activeAssessments: activeAssessments,
     STATUS: STATUS

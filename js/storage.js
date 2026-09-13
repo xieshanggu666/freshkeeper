@@ -77,6 +77,10 @@
     var rawEvents = Array.isArray(raw.events) ? raw.events
       : (raw.events == null ? [] : (lenient ? [] : null));
     if (rawEvents === null) { errors.push(where + '「' + item.name + '」的 events 必须是数组'); return null; }
+    var validIdx = 0;
+    var maxSeq = rawEvents.reduce(function (m, ev) {
+      return isPlainObject(ev) && Number.isFinite(ev.seq) ? Math.max(m, ev.seq) : m;
+    }, 0);
     rawEvents.forEach(function (ev, j) {
       if (!isPlainObject(ev)) {
         if (!lenient) errors.push(where + '「' + item.name + '」第 ' + (j + 1) + ' 条事件不是对象');
@@ -90,8 +94,11 @@
         if (!lenient) errors.push(where + '「' + item.name + '」的「' + ev.type + '」事件缺少合法日期');
         return;
       }
+      validIdx++;
       var clean = {
         id: (typeof ev.id === 'string' && ev.id) ? ev.id : uid('ev'),
+        // 保留原序号；历史数据无 seq 时按文件中的先后次序补号，并避开已有序号，保证同一天事件次序稳定
+        seq: Number.isFinite(ev.seq) ? ev.seq : Math.max(maxSeq, 0) + validIdx,
         type: ev.type, at: ev.at,
         deleted: !!ev.deleted
       };
@@ -268,8 +275,10 @@
     function addEvent(itemId, type, payload, source) {
       var item = getItem(itemId);
       if (!item) throw new Error('食材不存在: ' + itemId);
+      // 同一食材内单调递增的序号：同一天的多个事件（如先冷冻又解冻）据此排序
+      var seq = item.events.reduce(function (m, e) { return Math.max(m, Number(e.seq) || 0); }, 0) + 1;
       var ev = {
-        id: uid('ev'), type: type,
+        id: uid('ev'), seq: seq, type: type,
         at: (payload && payload.at) || new Date().toISOString().slice(0, 10),
         source: source || 'manual',
         createdAt: nowISO(),

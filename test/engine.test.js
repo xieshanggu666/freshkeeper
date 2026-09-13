@@ -136,6 +136,52 @@ test('做熟事件后按熟菜期限计算，重新加热不重置期限', () =>
   assert.match(b.reheatNote, /不重置|当餐/);
 });
 
+test('同一天多事件按 seq 排序：数组乱序传入也按先开封后做熟重放', () => {
+  // 同一天先 open(seq1) 再 cook(seq2)，数组故意倒序
+  const a = Engine.assess(item({
+    name: '猪里脊', purchaseDate: D(-10), packageType: 'sealed',
+    events: [
+      { id: 'e2', seq: 2, type: 'cook', at: D(0), createdAt: '2026-09-13T09:00:00Z', deleted: false },
+      { id: 'e1', seq: 1, type: 'open', at: D(0), createdAt: '2026-09-13T08:00:00Z', deleted: false }
+    ]
+  }), NOW);
+  assert.equal(a.state.cooked, true);
+  assert.equal(a.state.packageType, 'opened');
+  assert.equal(a.safeDaysLeft, 3, '今天做熟应按熟菜 3 天计');
+});
+
+test('同一天先冷冻后解冻：乱序事件仍重放为已解冻冷藏态', () => {
+  const a = Engine.assess(item({
+    name: '虾', purchaseDate: D(-2), packageType: 'sealed', location: 'fridge',
+    events: [
+      { id: 't', seq: 2, type: 'thaw', at: D(0), deleted: false },
+      { id: 'f', seq: 1, type: 'freeze', at: D(0), deleted: false }
+    ]
+  }), NOW);
+  assert.equal(a.state.clockPaused, false);
+  assert.equal(a.state.thawed, true);
+  assert.equal(a.state.location, 'fridge');
+});
+
+test('compareEvents：日期优先，同日按 seq，再回退 createdAt / id', () => {
+  const arr = [
+    { at: D(0), seq: 3, id: 'c' }, { at: D(0), seq: 1, id: 'a' },
+    { at: D(-1), seq: 9, id: 'z' }, { at: D(0), seq: 2, id: 'b' }
+  ];
+  assert.deepEqual(arr.slice().sort(Engine.compareEventsAsc).map(e => e.id), ['z', 'a', 'b', 'c']);
+  assert.deepEqual(arr.slice().sort(Engine.compareEventsDesc).map(e => e.id), ['c', 'b', 'a', 'z']);
+
+  const noSeq = [
+    { at: D(0), createdAt: '2026-09-13T10:00:00Z', id: 'late' },
+    { at: D(0), createdAt: '2026-09-13T08:00:00Z', id: 'early' }
+  ];
+  assert.deepEqual(noSeq.slice().sort(Engine.compareEventsAsc).map(e => e.id), ['early', 'late']);
+
+  // 完全等同时也不能恒返回一个方向（旧 bug：相等时一直返回 -1）
+  const same = [{ at: D(0), seq: 1, id: 'x' }, { at: D(0), seq: 1, id: 'x' }];
+  assert.equal(Engine.compareEventsAsc(same[0], same[1]), 0);
+});
+
 test('撤销事件（软删除）后期限恢复到事件前计算', () => {
   const base = item({
     name: '猪里脊', purchaseDate: D(-10), packageType: 'sealed',

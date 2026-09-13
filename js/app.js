@@ -283,10 +283,16 @@
     var a = FreshEngine.assess(item);
     var cat = a.state.cat;
 
+    // 有效事件：较晚发生的在前；同一天内按事件序号/创建时间继续排序（引擎比较器）
     var events = (item.events || []).filter(function (e) { return !e.deleted; })
-      .slice().sort(function (x, y) { return x.at < y.at ? 1 : x.at > y.at ? -1 : -1; });
+      .slice().sort(FreshEngine.compareEventsDesc);
+    // 已撤销事件：按撤销时间倒序，同毫秒回退到事件自身时序
     var undone = (item.events || []).filter(function (e) { return e.deleted; })
-      .slice().sort(function (x, y) { return (x.deletedAt || '') < (y.deletedAt || '') ? 1 : -1; });
+      .slice().sort(function (x, y) {
+        var dx = x.deletedAt || '', dy = y.deletedAt || '';
+        if (dx !== dy) return dx < dy ? 1 : -1;
+        return FreshEngine.compareEventsDesc(x, y);
+      });
 
     var adviceCls = a.status === 'expired' || a.status === 'danger' ? 'bad'
       : a.status === 'fresh' ? 'good' : '';
@@ -724,6 +730,7 @@
     setupOCR();
     setupSettings();
     renderAll();
+    if (typeof window !== 'undefined') window.__renderAll = renderAll; // 测试/调试钩子
   }
 
   document.addEventListener('DOMContentLoaded', init);
